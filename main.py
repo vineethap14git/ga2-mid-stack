@@ -1,20 +1,20 @@
 from fastapi import FastAPI, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
-import uuid
 import time
-import os
+import uuid
 
 app = FastAPI()
 
-ALLOWED_ORIGIN = "https://app-xxqt4l.example.com"
-RATE_LIMIT = 9
-WINDOW = 10
+EMAIL = "25f2008590@ds.study.iitm.ac.in"
 
-EMAIL = os.getenv("EMAIL", "25f2008590@ds.study.iitm.ac.in")
+ALLOWED_ORIGIN = "https://app-xxqt4l.example.com"
+
+RATE_LIMIT = 9
+WINDOW_SECONDS = 10
 
 
 # -----------------------------
-# 1. REQUEST CONTEXT MIDDLEWARE
+# Request Context Middleware
 # -----------------------------
 class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -27,14 +27,14 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
         response = await call_next(request)
 
-        # ALWAYS echo back the request ID
+        # Always echo request ID
         response.headers["X-Request-ID"] = request_id
 
         return response
 
 
 # -----------------------------
-# 2. RATE LIMIT MIDDLEWARE
+# Rate Limit Middleware
 # -----------------------------
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
@@ -46,12 +46,23 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if client_id:
             now = time.time()
-            history = self.clients.get(client_id, [])
 
-            history = [t for t in history if now - t < WINDOW]
+            history = self.clients.get(client_id, [])
+            history = [t for t in history if now - t < WINDOW_SECONDS]
 
             if len(history) >= RATE_LIMIT:
-                return Response("Too Many Requests", status_code=429)
+                response = Response(
+                    content="Too Many Requests",
+                    status_code=429,
+                )
+
+                # Echo request id even on 429
+                request_id = request.headers.get("X-Request-ID")
+                if not request_id:
+                    request_id = str(uuid.uuid4())
+
+                response.headers["X-Request-ID"] = request_id
+                return response
 
             history.append(now)
             self.clients[client_id] = history
@@ -60,44 +71,40 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
 
 # -----------------------------
-# 3. CORS (STRICT + EXAM SAFE)
+# CORS Middleware
 # -----------------------------
-@app.middleware("http")
-async def cors_middleware(request: Request, call_next):
-    origin = request.headers.get("origin")
+class CustomCORSMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        origin = request.headers.get("Origin")
 
-    # handle preflight
-    if request.method == "OPTIONS":
-        response = Response(status_code=200)
-    else:
         response = await call_next(request)
 
-    # ONLY allow assigned origin OR exam frontend origin
-    if origin == ALLOWED_ORIGIN:
-        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
-    elif origin and "exam" in origin:
-        # allow grader UI dynamically WITHOUT breaking rule (no wildcard used)
-        response.headers["Access-Control-Allow-Origin"] = origin
+        if origin == ALLOWED_ORIGIN:
+            response.headers["Access-Control-Allow-Origin"] = origin
 
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-    response.headers["Access-Control-Allow-Headers"] = "X-Client-Id, X-Request-ID, Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = (
+            "X-Request-ID, X-Client-Id, Content-Type"
+        )
 
-    return response
+        return response
 
 
-# -----------------------------
-# APPLY MIDDLEWARE ORDER
-# -----------------------------
+# Middleware order
+# Last added executes first.
+app.add_middleware(CustomCORSMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)
 
 
-# -----------------------------
-# ENDPOINT
-# -----------------------------
 @app.get("/ping")
 async def ping(request: Request):
     return {
-        "email": "25f2008590@ds.study.iitm.ac.in",
+        "email": EMAIL,
         "request_id": request.state.request_id,
     }
+
+
+@app.options("/ping")
+async def ping_options():
+    return Response(status_code=200)
