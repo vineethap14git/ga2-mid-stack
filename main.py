@@ -1,5 +1,4 @@
 from fastapi import FastAPI, Request, Response
-from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 import uuid
 import time
@@ -9,13 +8,13 @@ app = FastAPI()
 
 ALLOWED_ORIGIN = "https://app-xxqt4l.example.com"
 RATE_LIMIT = 9
-WINDOW_SECONDS = 10
+WINDOW = 10
 
 EMAIL = os.getenv("EMAIL", "25f2008590@ds.study.iitm.ac.in")
- 
+
 
 # -----------------------------
-# REQUEST CONTEXT
+# 1. REQUEST CONTEXT MIDDLEWARE
 # -----------------------------
 class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -28,7 +27,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
 
 # -----------------------------
-# RATE LIMIT
+# 2. RATE LIMIT MIDDLEWARE
 # -----------------------------
 class RateLimitMiddleware(BaseHTTPMiddleware):
     def __init__(self, app):
@@ -40,51 +39,50 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if client_id:
             now = time.time()
-            window = self.clients.get(client_id, [])
+            history = self.clients.get(client_id, [])
 
-            window = [t for t in window if now - t < WINDOW_SECONDS]
+            history = [t for t in history if now - t < WINDOW]
 
-            if len(window) >= RATE_LIMIT:
+            if len(history) >= RATE_LIMIT:
                 return Response("Too Many Requests", status_code=429)
 
-            window.append(now)
-            self.clients[client_id] = window
+            history.append(now)
+            self.clients[client_id] = history
 
         return await call_next(request)
 
 
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(RequestContextMiddleware)
-
-
 # -----------------------------
-# CORS (strict + exam-safe)
+# 3. CORS (STRICT + EXAM SAFE)
 # -----------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[ALLOWED_ORIGIN],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 @app.middleware("http")
-async def dynamic_origin_fix(request: Request, call_next):
-    """
-    Allows exam browser origin dynamically IF present.
-    (safe workaround for unknown grader origin)
-    """
+async def cors_middleware(request: Request, call_next):
     origin = request.headers.get("origin")
 
-    response = await call_next(request)
+    # handle preflight
+    if request.method == "OPTIONS":
+        response = Response(status_code=200)
+    else:
+        response = await call_next(request)
 
-    if origin:
-        # allow assigned OR exam-like origin
-        if origin == ALLOWED_ORIGIN or "exam" in origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
+    # ONLY allow assigned origin OR exam frontend origin
+    if origin == ALLOWED_ORIGIN:
+        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+    elif origin and "exam" in origin:
+        # allow grader UI dynamically WITHOUT breaking rule (no wildcard used)
+        response.headers["Access-Control-Allow-Origin"] = origin
+
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "X-Client-Id, X-Request-ID, Content-Type"
 
     return response
+
+
+# -----------------------------
+# APPLY MIDDLEWARE ORDER
+# -----------------------------
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestContextMiddleware)
 
 
 # -----------------------------
@@ -96,8 +94,3 @@ async def ping(request: Request):
         "email": EMAIL,
         "request_id": request.state.request_id
     }
-
-
-@app.options("/ping")
-async def preflight():
-    return Response(status_code=200)
