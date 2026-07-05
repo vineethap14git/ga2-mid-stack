@@ -1,110 +1,104 @@
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
+
+from uuid import uuid4
 import time
-import uuid
 
 app = FastAPI()
 
 EMAIL = "25f2008590@ds.study.iitm.ac.in"
 
-ALLOWED_ORIGIN = "https://app-xxqt4l.example.com"
+# ----------------------------
+# CORS
+# ----------------------------
 
-RATE_LIMIT = 9
-WINDOW_SECONDS = 10
+allowed_origins = [
+    "https://app-xxqt4l.example.com",
+    "https://exam.sanand.workers.dev"
+    # IMPORTANT
+    # Add IITM exam origin below when they mention it.
+    # Example:
+    # "https://exam.sanand.workers.dev"
+]
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# -----------------------------
+# ----------------------------
 # Request Context Middleware
-# -----------------------------
+# ----------------------------
+
 class RequestContextMiddleware(BaseHTTPMiddleware):
+
     async def dispatch(self, request: Request, call_next):
+
         request_id = request.headers.get("X-Request-ID")
 
         if not request_id:
-            request_id = str(uuid.uuid4())
+            request_id = str(uuid4())
 
         request.state.request_id = request_id
 
         response = await call_next(request)
 
-        # Always echo request ID
         response.headers["X-Request-ID"] = request_id
 
         return response
 
+app.add_middleware(RequestContextMiddleware)
 
-# -----------------------------
-# Rate Limit Middleware
-# -----------------------------
+# ----------------------------
+# Rate Limiter
+# ----------------------------
+
+RATE_LIMIT = 9
+WINDOW = 10
+
+clients = {}
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app):
-        super().__init__(app)
-        self.clients = {}
 
     async def dispatch(self, request: Request, call_next):
-        client_id = request.headers.get("X-Client-Id")
 
-        if client_id:
-            now = time.time()
+        client = request.headers.get("X-Client-Id", "anonymous")
 
-            history = self.clients.get(client_id, [])
-            history = [t for t in history if now - t < WINDOW_SECONDS]
+        now = time.time()
 
-            if len(history) >= RATE_LIMIT:
-                response = Response(
-                    content="Too Many Requests",
-                    status_code=429,
-                )
+        history = clients.get(client, [])
 
-                # Echo request id even on 429
-                request_id = request.headers.get("X-Request-ID")
-                if not request_id:
-                    request_id = str(uuid.uuid4())
+        history = [t for t in history if now - t < WINDOW]
 
-                response.headers["X-Request-ID"] = request_id
-                return response
+        if len(history) >= RATE_LIMIT:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "Rate limit exceeded"}
+            )
 
-            history.append(now)
-            self.clients[client_id] = history
+        history.append(now)
+
+        clients[client] = history
 
         return await call_next(request)
 
 
-# -----------------------------
-# CORS Middleware
-# -----------------------------
-class CustomCORSMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        origin = request.headers.get("Origin")
-
-        response = await call_next(request)
-
-        if origin == ALLOWED_ORIGIN:
-            response.headers["Access-Control-Allow-Origin"] = origin
-
-        response.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-        response.headers["Access-Control-Allow-Headers"] = (
-            "X-Request-ID, X-Client-Id, Content-Type"
-        )
-
-        return response
-
-
-# Middleware order
-# Last added executes first.
-app.add_middleware(CustomCORSMiddleware)
 app.add_middleware(RateLimitMiddleware)
-app.add_middleware(RequestContextMiddleware)
 
+# ----------------------------
+# Endpoint
+# ----------------------------
 
 @app.get("/ping")
 async def ping(request: Request):
+
     return {
         "email": EMAIL,
-        "request_id": request.state.request_id,
+        "request_id": request.state.request_id
     }
-
-
-@app.options("/ping")
-async def ping_options():
-    return Response(status_code=200)
