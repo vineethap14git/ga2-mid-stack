@@ -35,24 +35,20 @@ app.add_middleware(
 # Request Context Middleware
 # ----------------------------
 
-class RequestContextMiddleware(BaseHTTPMiddleware):
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID")
 
-    async def dispatch(self, request: Request, call_next):
+    if not request_id:
+        request_id = str(uuid4())
 
-        request_id = request.headers.get("X-Request-ID")
+    request.state.request_id = request_id
 
-        if not request_id:
-            request_id = str(uuid4())
+    response = await call_next(request)
 
-        request.state.request_id = request_id
+    response.headers["X-Request-ID"] = request_id
 
-        response = await call_next(request)
-
-        response.headers["X-Request-ID"] = request_id
-
-        return response
-
-app.add_middleware(RequestContextMiddleware)
+    return response
 
 # ----------------------------
 # Rate Limiter
