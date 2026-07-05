@@ -18,11 +18,18 @@ EMAIL = os.getenv("EMAIL", "25f2008590@ds.study.iitm.ac.in")
 # -----------------------------
 class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-        request.state.request_id = req_id
+        request_id = request.headers.get("X-Request-ID")
+
+        if not request_id:
+            request_id = str(uuid.uuid4())
+
+        request.state.request_id = request_id
 
         response = await call_next(request)
-        response.headers["X-Request-ID"] = req_id
+
+        # ALWAYS echo back the request ID
+        response.headers["X-Request-ID"] = request_id
+
         return response
 
 
@@ -91,6 +98,6 @@ app.add_middleware(RequestContextMiddleware)
 @app.get("/ping")
 async def ping(request: Request):
     return {
-        "email": EMAIL,
-        "request_id": request.state.request_id
+        "email": "25f2008590@ds.study.iitm.ac.in",
+        "request_id": request.state.request_id,
     }
